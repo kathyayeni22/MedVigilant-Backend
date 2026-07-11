@@ -1,0 +1,81 @@
+{
+  "last_prescription": {
+    "extracted_text": "Rods dlola mpo3naDG ccallade 7cO to u KaBS 'Ccr VedealCo t Thnar] Oeals 350 to {16 Puteud UJPMER) HoenDin Guliam-mii Ph; 8036993163 Dio. 30 2012 NumiuAStvika Welght Enroy 47 ( 25 Lq clln-al Eescnpuon: Ueti 22/mi5 Bil Oee Adtel Syp Calpo_ @sois) TmL QSh DELCON Tds sq S4p Levoun Tos sd S4p MEFTPL-P sos e9t1 ~ tokit; posted on Facebook by Bency @oole ) oL Jinage",
+    "filename": "prescription_1759240131_WhatsApp Image 2025-09-30 at 7.16.12 PM.jpeg",
+    "timestamp": 1759240162.8209493
+  },
+  "last_medical_image": {
+    "analysis": {
+      "prediction_class_index": 728
+    },
+    "filename": "medical_1759240288_WhatsApp Image 2025-09-30 at 7.20.55 PM.jpeg",
+    "timestamp": 1759240290.079055
+  },
+  "last_symptom_check": {
+    "symptoms": "cold",
+    "predicted_conditions": [
+      "Common Cold",
+      "Flu",
+      "COVID-19",
+      "Allergy",
+      "Migraine",
+      "Pneumonia"
+    ],
+    "scores": [
+      0.30116400122642517,
+      0.19595849514007568,
+      0.1916009485721588,
+      0.1271733045578003,
+      0.11027580499649048,
+      0.07382746785879135
+    ],
+    "timestamp": 1759239634.2835891
+  },
+  "robot_status": {
+    "battery": 92,
+    "location": "Moving",
+    "mode": "charge",
+    "last_command": "charge",
+    "timestamp": 1759240506.605669
+  },
+  "histories": {
+    "ocr": [
+      {
+        "extracted_text": "Rods dlola mpo3naDG ccallade 7cO to u KaBS 'Ccr VedealCo t Thnar] Oeals 350 to {16 Puteud UJPMER) HoenDin Guliam-mii Ph; 8036993163 Dio. 30 2012 NumiuAStvika Welght Enroy 47 ( 25 Lq clln-al Eescnpuon: Ueti 22/mi5 Bil Oee Adtel Syp Calpo_ @sois) TmL QSh DELCON Tds sq S4p Levoun Tos sd S4p MEFTPL-P sos e9t1 ~ tokit; posted on Facebook by Bency @oole ) oL Jinage",
+        "filename": "prescription_1759240131_WhatsApp Image 2025-09-30 at 7.16.12 PM.jpeg",
+        "timestamp": 1759240162.8209493
+      }
+    ],
+    "ai": [
+      {
+        "analysis": {
+          "prediction_class_index": 728
+        },
+        "filename": "medical_1759240288_WhatsApp Image 2025-09-30 at 7.20.55 PM.jpeg",
+        "timestamp": 1759240290.079055
+      }
+    ],
+    "symptom": [
+      {
+        "symptoms": "cold",
+        "predicted_conditions": [
+          "Common Cold",
+          "Flu",
+          "COVID-19",
+          "Allergy",
+          "Migraine",
+          "Pneumonia"
+        ],
+        "scores": [
+          0.30116400122642517,
+          0.19595849514007568,
+          0.1916009485721588,
+          0.1271733045578003,
+          0.11027580499649048,
+          0.07382746785879135
+        ],
+        "timestamp": 1759239634.2835891
+      }
+    ]
+  }
+}

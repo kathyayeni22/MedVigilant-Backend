@@ -1,0 +1,12 @@
+disease,age,bmi,glucose,food,label
+diabetes,45,28,160,oats,1
+diabetes,45,28,160,vegetables,1
+diabetes,45,28,160,sugary_drinks,0
+diabetes,45,28,160,white_rice,0
+hypertension,55,26,140,banana,1
+hypertension,55,26,140,spinach,1
+hypertension,55,26,140,salty_snacks,0
+heart_disease,60,30,150,olive_oil,1
+heart_disease,60,30,150,fried_food,0
+asthma,30,23,90,fruits,1
+asthma,30,23,90,smoking_foods,0

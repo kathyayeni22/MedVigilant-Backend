@@ -1,0 +1,17 @@
+test_name,value,status
+glucose,70,Normal
+glucose,85,Normal
+glucose,110,Normal
+glucose,130,High
+glucose,160,High
+glucose,200,High
+glucose,55,Low
+glucose,60,Low
+hemoglobin,11,Low
+hemoglobin,13,Normal
+hemoglobin,15,Normal
+hemoglobin,18,High
+cholesterol,160,Normal
+cholesterol,210,High
+cholesterol,260,High
+cholesterol,130,Low

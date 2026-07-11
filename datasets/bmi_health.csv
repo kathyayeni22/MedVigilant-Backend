@@ -1,0 +1,12 @@
+height_cm,weight_kg,bmi,category
+150,40,17.8,Underweight
+155,45,18.7,Normal
+160,50,19.5,Normal
+165,65,23.9,Normal
+170,72,24.9,Overweight
+172,80,27.0,Overweight
+168,85,30.1,Obese
+160,90,35.2,Obese
+175,60,19.6,Normal
+180,95,29.3,Overweight
+
