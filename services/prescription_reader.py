@@ -1,21 +1,9 @@
-import pytesseract
-from PIL import Image
+import easyocr
 from groq import Groq
-import json
-import re
-
-# -----------------------------
-# TESSERACT PATH
-# -----------------------------
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
-
-# -----------------------------
-# GROQ CLIENT
-# -----------------------------
 from dotenv import load_dotenv
 import os
+import json
+import re
 
 load_dotenv()
 
@@ -23,50 +11,45 @@ client = Groq(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
+# Initialize EasyOCR once
+reader = easyocr.Reader(['en'])
+
+
 # -----------------------------
 # OCR EXTRACTION
 # -----------------------------
-from PIL import Image
-import pytesseract
-
 def extract_prescription_text(file_path):
-
     try:
-        print("Opening:", file_path)
+        print("Reading prescription:", file_path)
 
-        image = Image.open(file_path)
+        result = reader.readtext(file_path, detail=0)
 
-        print("Image opened successfully")
+        text = "\n".join(result)
 
-        text = pytesseract.image_to_string(image)
-
-        print("OCR Output:")
+        print("OCR TEXT:")
         print(text)
+
+        if not text.strip():
+            raise Exception("No text detected from prescription.")
 
         return text
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        print("OCR ERROR:", e)
         raise e
 
 
 # -----------------------------
-# CLEAN JSON RESPONSE
+# CLEAN JSON
 # -----------------------------
 def clean_json(text):
 
-    # Remove markdown
     text = text.replace("```json", "")
     text = text.replace("```", "")
 
-    # Find first {
     start = text.find("{")
-
-    # Find last }
     end = text.rfind("}")
 
-    # Extract only JSON
     if start != -1 and end != -1:
         text = text[start:end + 1]
 
@@ -83,7 +66,7 @@ def analyze_prescription(extracted_text):
         prompt = f"""
 Analyze this medical prescription carefully.
 
-Extract in JSON format:
+Return ONLY valid JSON.
 
 {{
   "patient_name": "",
@@ -101,13 +84,12 @@ Extract in JSON format:
 
 Rules:
 - Fix OCR spelling mistakes.
-- Detect real medicine names correctly.
-- Explain medicine purpose in simple words.
-- Keep dosage simple.
-- Add medicine warnings if possible.
-- Return ONLY valid JSON.
+- Detect medicine names.
+- Explain medicine purpose simply.
+- Keep dosage short.
+- Add warnings if available.
 
-Prescription Text:
+Prescription:
 {extracted_text}
 """
 
@@ -116,10 +98,7 @@ Prescription Text:
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are a medical prescription analyzer. "
-                        "Always return valid JSON only."
-                    )
+                    "content": "Return valid JSON only."
                 },
                 {
                     "role": "user",
@@ -130,18 +109,19 @@ Prescription Text:
             max_tokens=700
         )
 
-        response_text = completion.choices[0].message.content
+        response = completion.choices[0].message.content
 
-        cleaned = clean_json(response_text)
+        cleaned = clean_json(response)
 
-        parsed = json.loads(cleaned)
-
-        return parsed
+        return json.loads(cleaned)
 
     except Exception as e:
 
-        print("PRESCRIPTION AI ERROR:", e)
+        print("Prescription AI Error:", e)
 
         return {
-            "error": "Unable to analyze prescription"
+            "patient_name": "",
+            "doctor_name": "",
+            "medicines": [],
+            "summary": "Unable to analyze prescription."
         }
