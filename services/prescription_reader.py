@@ -12,7 +12,7 @@ client = Groq(
 )
 
 # Initialize EasyOCR once
-reader = easyocr.Reader(['en'])
+from services.ocr_reader import get_reader
 
 
 # -----------------------------
@@ -22,8 +22,12 @@ def extract_prescription_text(file_path):
     try:
         print("Reading prescription:", file_path)
 
-        result = reader.readtext(file_path, detail=0)
+        reader = get_reader()
 
+        result = reader.readtext(
+            file_path,
+            detail=0
+        )
         text = "\n".join(result)
 
         print("OCR TEXT:")

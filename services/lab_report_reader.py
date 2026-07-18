@@ -12,7 +12,7 @@ client = Groq(
 )
 
 # Initialize EasyOCR once
-reader = easyocr.Reader(['en'])
+from services.ocr_reader import get_reader
 
 
 # -----------------------------
@@ -21,9 +21,12 @@ reader = easyocr.Reader(['en'])
 def extract_lab_text(file_path):
 
     try:
+        reader = get_reader()
 
-        result = reader.readtext(file_path, detail=0)
-
+        result = reader.readtext(
+            file_path,
+            detail=0
+        )
         text = "\n".join(result)
 
         print("LAB OCR:")
