@@ -491,7 +491,7 @@ async def read_prescription(file: UploadFile = File(...)):
 
         ai_summary = analyze_prescription(extracted_text)
         if os.path.exists(file_path):
-        os.remove(file_path)
+            os.remove(file_path)
 
 
         return {
@@ -521,8 +521,9 @@ async def read_lab_report(file: UploadFile = File(...)):
     extracted_text = extract_lab_text(file_path)
 
     ai_summary = analyze_lab_report(extracted_text)
+
     if os.path.exists(file_path):
-    os.remove(file_path)
+        os.remove(file_path)
 
     return {
         "status": "success",
