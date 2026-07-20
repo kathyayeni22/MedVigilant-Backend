@@ -513,14 +513,22 @@ async def read_prescription(file: UploadFile = File(...)):
 @app.post("/read-lab-report")
 async def read_lab_report(file: UploadFile = File(...)):
 
+    print("LAB ENDPOINT START")
+
     file_path = f"temp_{file.filename}"
 
     with open(file_path, "wb") as f:
         f.write(await file.read())
 
+    print("FILE SAVED")
+
     extracted_text = extract_lab_text(file_path)
 
+    print("OCR FINISHED")
+
     ai_summary = analyze_lab_report(extracted_text)
+
+    print("AI ANALYSIS FINISHED")
 
     if os.path.exists(file_path):
         os.remove(file_path)

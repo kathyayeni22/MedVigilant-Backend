@@ -20,16 +20,25 @@ from services.ocr_reader import get_reader
 # -----------------------------
 def extract_lab_text(file_path):
 
+    print("STEP 1: Entered extract_lab_text")
+
     try:
+        print("STEP 2: Loading EasyOCR Reader")
+
         reader = get_reader()
+
+        print("STEP 3: Reader loaded successfully")
 
         result = reader.readtext(
             file_path,
             detail=0
         )
+
+        print("STEP 4: OCR completed")
+
         text = "\n".join(result)
 
-        print("LAB OCR:")
+        print("STEP 5: Extracted Text:")
         print(text)
 
         if not text.strip():
@@ -40,7 +49,6 @@ def extract_lab_text(file_path):
     except Exception as e:
         print("OCR ERROR:", e)
         raise e
-
 
 # -----------------------------
 # CLEAN JSON
