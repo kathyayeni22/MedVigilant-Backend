@@ -1,54 +1,55 @@
-
-from groq import Groq
-from dotenv import load_dotenv
 import os
 import json
 import re
+import requests
+from groq import Groq
+from dotenv import load_dotenv
 
 load_dotenv()
+
+OCR_API_KEY = os.getenv("OCR_SPACE_API_KEY")
 
 client = Groq(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-# Initialize EasyOCR once
-from services.ocr_reader import get_reader
-
 
 # -----------------------------
-# OCR
+# OCR USING OCR.SPACE
 # -----------------------------
 def extract_lab_text(file_path):
 
-    print("STEP 1: Entered extract_lab_text")
+    payload = {
+        "apikey": OCR_API_KEY,
+        "language": "eng",
+        "isOverlayRequired": False,
+    }
 
-    try:
-        print("STEP 2: Loading EasyOCR Reader")
-
-        reader = get_reader()
-
-        print("STEP 3: Reader loaded successfully")
-
-        result = reader.readtext(
-            file_path,
-            detail=0
+    with open(file_path, "rb") as f:
+        response = requests.post(
+            "https://api.ocr.space/parse/image",
+            files={"file": f},
+            data=payload,
+            timeout=60
         )
 
-        print("STEP 4: OCR completed")
+    result = response.json()
 
-        text = "\n".join(result)
+    if result.get("IsErroredOnProcessing"):
+        raise Exception(result.get("ErrorMessage"))
 
-        print("STEP 5: Extracted Text:")
-        print(text)
+    parsed_results = result.get("ParsedResults", [])
 
-        if not text.strip():
-            raise Exception("No text detected.")
+    if not parsed_results:
+        raise Exception("No text detected.")
 
-        return text
+    text = parsed_results[0].get("ParsedText", "")
 
-    except Exception as e:
-        print("OCR ERROR:", e)
-        raise e
+    print("LAB OCR:")
+    print(text)
+
+    return text
+
 
 # -----------------------------
 # CLEAN JSON
@@ -62,7 +63,7 @@ def clean_json(text):
     end = text.rfind("}") + 1
 
     if start == -1 or end == 0:
-        return ""
+        raise Exception("No valid JSON returned by AI.")
 
     text = text[start:end]
 
@@ -125,13 +126,12 @@ Lab Report:
 
         response = completion.choices[0].message.content
 
+        print("RAW AI RESPONSE:")
         print(response)
 
         cleaned = clean_json(response)
 
-        parsed = json.loads(cleaned)
-
-        return parsed
+        return json.loads(cleaned)
 
     except Exception as e:
 
@@ -143,6 +143,6 @@ Lab Report:
             "health_risks": [],
             "summary": "Unable to analyze the report.",
             "advice": [
-                "Upload a clearer image."
+                "Please upload a clearer image."
             ]
         }

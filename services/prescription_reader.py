@@ -1,46 +1,46 @@
-
-from groq import Groq
-from dotenv import load_dotenv
 import os
 import json
-import re
+import requests
+from groq import Groq
+from dotenv import load_dotenv
 
 load_dotenv()
+
+OCR_API_KEY = os.getenv("OCR_SPACE_API_KEY")
 
 client = Groq(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-# Initialize EasyOCR once
-from services.ocr_reader import get_reader
-
 
 # -----------------------------
-# OCR EXTRACTION
+# OCR USING OCR.SPACE
 # -----------------------------
 def extract_prescription_text(file_path):
-    try:
-        print("Reading prescription:", file_path)
 
-        reader = get_reader()
+    payload = {
+        "apikey": OCR_API_KEY,
+        "language": "eng",
+        "isOverlayRequired": False,
+    }
 
-        result = reader.readtext(
-            file_path,
-            detail=0
+    with open(file_path, "rb") as f:
+        response = requests.post(
+            "https://api.ocr.space/parse/image",
+            files={"file": f},
+            data=payload
         )
-        text = "\n".join(result)
 
-        print("OCR TEXT:")
-        print(text)
+    result = response.json()
 
-        if not text.strip():
-            raise Exception("No text detected from prescription.")
+    if result.get("IsErroredOnProcessing"):
+        raise Exception(result.get("ErrorMessage"))
 
-        return text
+    text = result["ParsedResults"][0]["ParsedText"]
 
-    except Exception as e:
-        print("OCR ERROR:", e)
-        raise e
+    print(text)
+
+    return text
 
 
 # -----------------------------
@@ -65,67 +65,48 @@ def clean_json(text):
 # -----------------------------
 def analyze_prescription(extracted_text):
 
-    try:
-
-        prompt = f"""
-Analyze this medical prescription carefully.
+    prompt = f"""
+Analyze this medical prescription.
 
 Return ONLY valid JSON.
 
 {{
-  "patient_name": "",
-  "doctor_name": "",
-  "medicines": [
+  "patient_name":"",
+  "doctor_name":"",
+  "medicines":[
     {{
-      "name": "",
-      "purpose": "",
-      "dosage": "",
-      "warning": ""
+      "name":"",
+      "purpose":"",
+      "dosage":"",
+      "warning":""
     }}
   ],
-  "summary": ""
+  "summary":""
 }}
 
-Rules:
-- Fix OCR spelling mistakes.
-- Detect medicine names.
-- Explain medicine purpose simply.
-- Keep dosage short.
-- Add warnings if available.
-
 Prescription:
+
 {extracted_text}
 """
 
-        completion = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Return valid JSON only."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.2,
-            max_tokens=700
-        )
+    completion = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {
+                "role":"system",
+                "content":"Return only JSON."
+            },
+            {
+                "role":"user",
+                "content":prompt
+            }
+        ],
+        temperature=0.2,
+        max_tokens=700
+    )
 
-        response = completion.choices[0].message.content
+    response = completion.choices[0].message.content
 
-        cleaned = clean_json(response)
+    cleaned = clean_json(response)
 
-        return json.loads(cleaned)
-
-    except Exception as e:
-
-        print("Prescription AI Error:", e)
-
-        return {
-            "patient_name": "",
-            "doctor_name": "",
-            "medicines": [],
-            "summary": "Unable to analyze prescription."
-        }
+    return json.loads(cleaned)
