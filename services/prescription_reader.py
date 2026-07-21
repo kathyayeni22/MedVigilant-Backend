@@ -106,7 +106,9 @@ Prescription:
     )
 
     response = completion.choices[0].message.content
-
+    print("========== RAW AI RESPONSE ==========")
+    print(response)
+    print("=====================================")
     cleaned = clean_json(response)
 
     return json.loads(cleaned)

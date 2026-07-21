@@ -128,20 +128,26 @@ Lab Report:
 
         print("RAW AI RESPONSE:")
         print(response)
+        print("========== RAW AI RESPONSE ==========")
+        print(response)
+        print("=====================================")
 
         cleaned = clean_json(response)
 
         return json.loads(cleaned)
 
     except Exception as e:
+        import traceback
 
-        print("LAB AI ERROR:", e)
+        print("========== LAB AI ERROR ==========")
+        traceback.print_exc()
+        print("==================================")
 
         return {
             "patient_name": "",
             "tests": [],
             "health_risks": [],
-            "summary": "Unable to analyze the report.",
+            "summary": str(e),
             "advice": [
                 "Please upload a clearer image."
             ]
