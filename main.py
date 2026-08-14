@@ -18,15 +18,14 @@ from models import *
 # Services
 from services.medicine_reminder import generate_reminders
 from services.medicine_service import validate_medicine_data
-from services.ai_chatbot import get_ai_response, get_chat_history
-from services.prescription_reader import (
-    extract_prescription_text,
-    analyze_prescription
+from services.ai_chatbot import (
+    get_ai_response,
+    get_chat_history,
+    clear_chat_history
 )
-from services.lab_report_reader import (
-    extract_lab_text,
-    analyze_lab_report
-)
+
+from prescription import analyze_prescription
+from services.lab_report_reader import analyze_lab_report
 from services.doctor_recommender import recommend_doctor
 
 # ML Predictors
@@ -35,7 +34,7 @@ from predictors.train_food_model import recommend_food
 from predictors.train_bmi_model import predict_bmi
 from predictors.train_lab_test_model import predict_lab, recommend_lab_tests_from_symptoms
 from predictors.train_mental_health_model import predict_mental_health
-
+from ocr.ocr_utils import extract_text
 
 Base.metadata.create_all(bind=engine)
 
@@ -478,21 +477,33 @@ def clear_chat(user_id: str):
 # -----------------------------------
 @app.post("/read-prescription")
 async def read_prescription(file: UploadFile = File(...)):
+
     try:
+
         upload_folder = "uploads"
         os.makedirs(upload_folder, exist_ok=True)
 
-        file_path = f"{upload_folder}/{file.filename}"
+        file_path = os.path.join(
+            upload_folder,
+            file.filename
+        )
 
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        extracted_text = extract_prescription_text(file_path)
+        # OCR
+        extracted_text = extract_text(file_path)
 
+        print("\n========== OCR OUTPUT ==========")
+        print(extracted_text)
+        print("================================\n")
+
+        # AI analysis
         ai_summary = analyze_prescription(extracted_text)
+
+        # Delete uploaded file
         if os.path.exists(file_path):
             os.remove(file_path)
-
 
         return {
             "status": "success",
@@ -501,8 +512,10 @@ async def read_prescription(file: UploadFile = File(...)):
         }
 
     except Exception as e:
+
         import traceback
         traceback.print_exc()
+
         return {
             "status": "error",
             "message": str(e)
@@ -522,7 +535,7 @@ async def read_lab_report(file: UploadFile = File(...)):
 
     print("FILE SAVED")
 
-    extracted_text = extract_lab_text(file_path)
+    extracted_text = extract_text(file_path)
 
     print("OCR FINISHED")
 

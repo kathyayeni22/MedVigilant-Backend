@@ -56,7 +56,7 @@ def recommend_doctor(symptoms):
                     "content": prompt
                 }
             ],
-            temperature=0.2,
+            temperature=0,
             max_tokens=400
         )
 
