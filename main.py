@@ -97,7 +97,12 @@ class ChatRequest(BaseModel):
 @app.get("/")
 def home():
     return {"message": "AI Healthcare API running 🚀"}
-
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "message": "MedVigilant backend is running"
+    }
 
 # -----------------------------
 # LAB TEST RESULT ANALYSIS
