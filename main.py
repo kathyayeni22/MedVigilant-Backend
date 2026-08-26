@@ -528,34 +528,91 @@ async def read_prescription(file: UploadFile = File(...)):
 # -----------------------------
 # LAB REPORT READER
 # -----------------------------
+# -----------------------------
+# LAB REPORT READER
+# -----------------------------
+
 @app.post("/read-lab-report")
 async def read_lab_report(file: UploadFile = File(...)):
 
-    print("LAB ENDPOINT START")
+    file_path = None
 
-    file_path = f"temp_{file.filename}"
+    try:
+        print("\n========== LAB REPORT START ==========")
 
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
+        # -----------------------------
+        # Validate file
+        # -----------------------------
 
-    print("FILE SAVED")
+        if not file.filename:
+            return {
+                "status": "error",
+                "message": "No file selected."
+            }
 
-    extracted_text = extract_text(file_path)
+        # -----------------------------
+        # Save uploaded file
+        # -----------------------------
 
-    print("OCR FINISHED")
+        upload_folder = "uploads"
+        os.makedirs(upload_folder, exist_ok=True)
 
-    ai_summary = analyze_lab_report(extracted_text)
+        file_path = os.path.join(
+            upload_folder,
+            file.filename
+        )
 
-    print("AI ANALYSIS FINISHED")
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    if os.path.exists(file_path):
-        os.remove(file_path)
+        print("FILE SAVED:", file_path)
 
-    return {
-        "status": "success",
-        "extracted_text": extracted_text,
-        "ai_summary": ai_summary
-    }
+        # -----------------------------
+        # OCR
+        # -----------------------------
+
+        extracted_text = extract_text(file_path)
+
+        print("\n========== OCR OUTPUT ==========")
+        print(extracted_text)
+        print("================================\n")
+
+        # -----------------------------
+        # AI LAB REPORT ANALYSIS
+        # -----------------------------
+
+        ai_summary = analyze_lab_report(extracted_text)
+
+        print("\n========== AI LAB SUMMARY ==========")
+        print(ai_summary)
+        print("====================================\n")
+
+        return {
+            "status": "success",
+            "extracted_text": extracted_text,
+            "ai_summary": ai_summary
+        }
+
+    except Exception as e:
+
+        import traceback
+        traceback.print_exc()
+
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+    finally:
+
+        # -----------------------------
+        # DELETE TEMPORARY FILE
+        # -----------------------------
+
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
+
+        print("========== LAB REPORT END ==========\n")
 # -----------------------------
 # AI DOCTOR RECOMMENDATION
 # -----------------------------
