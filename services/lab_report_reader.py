@@ -1,204 +1,258 @@
 import os
 import json
-import re
-
 from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
 
-client = Groq(
-    api_key=os.getenv("GROQ_API_KEY")
-)
+# ============================================================
+# GROQ CLIENT
+# ============================================================
+
+api_key = os.getenv("GROQ_API_KEY")
+
+if not api_key:
+    raise RuntimeError("GROQ_API_KEY is not configured.")
+
+client = Groq(api_key=api_key)
 
 
-# =========================================================
+# ============================================================
 # CLEAN JSON
-# =========================================================
+# ============================================================
 
 def clean_json(text):
+    """
+    Removes markdown code fences and extracts the JSON object.
+    """
 
     if not text:
-        raise Exception("Empty response from AI.")
+        return ""
 
-    text = text.replace("```json", "")
-    text = text.replace("```", "")
     text = text.strip()
 
+    # Remove markdown fences
+    text = text.replace("```json", "")
+    text = text.replace("```JSON", "")
+    text = text.replace("```", "")
+
+    # Find JSON object
     start = text.find("{")
     end = text.rfind("}")
 
-    if start == -1 or end == -1:
-        raise Exception("No valid JSON found.")
-
-    text = text[start:end + 1]
-
-    # Remove trailing commas
-    text = re.sub(r",\s*}", "}", text)
-    text = re.sub(r",\s*]", "]", text)
+    if start != -1 and end != -1:
+        text = text[start:end + 1]
 
     return text.strip()
 
 
-# =========================================================
+# ============================================================
+# SAFE FALLBACK
+# ============================================================
+
+def fallback_result():
+    return {
+        "patient_name": "",
+        "tests": [],
+        "health_risks": [],
+        "summary": "Unable to analyze the laboratory report.",
+        "advice": [
+            "Please upload a clearer laboratory report."
+        ]
+    }
+
+
+# ============================================================
 # LAB REPORT ANALYSIS
-# =========================================================
+# ============================================================
 
 def analyze_lab_report(extracted_text):
 
-    try:
+    # --------------------------------------------------------
+    # Validate OCR text
+    # --------------------------------------------------------
 
-        prompt = f"""
-You are an expert medical laboratory report analyzer.
+    if not extracted_text or len(extracted_text.strip()) < 20:
+        return fallback_result()
 
-The OCR text below comes from a laboratory report.
+    print("\n========== LAB OCR TEXT ==========")
+    print(extracted_text)
+    print("===================================\n")
 
-The OCR may contain:
-- spelling mistakes
+    # --------------------------------------------------------
+    # AI PROMPT
+    # --------------------------------------------------------
+
+    prompt = f"""
+You are a laboratory report analysis assistant.
+
+You will receive OCR text extracted from a medical laboratory report.
+
+The OCR text may contain:
 - missing spaces
-- headers
-- footers
-- websites
-- phone numbers
-- units
-- reference ranges
-- formatting errors
+- incorrect characters
+- broken words
+- misplaced units
+- table formatting problems
+- repeated text
+- headers mixed with test results
 
-Your task is to extract ONLY reliable information from the report.
+Your task is to carefully reconstruct the laboratory test information
+from the OCR text.
 
 IMPORTANT RULES:
 
-1. NEVER invent information.
+1. Do NOT invent laboratory values.
 
-2. Patient identification:
-   - Look for labels such as:
-     "Name"
-     "Patient Name"
-     "PatientID"
-     "Patient ID"
-   - If a real patient name is clearly available, return it.
-   - If only a Patient ID is available, use that ID as patient_name.
-   - Example:
-     PatientID: PN2
-     -> patient_name = "PN2"
+2. Do NOT invent tests that are not present in the OCR.
 
-3. Ignore:
-   - laboratory/company names
-   - websites
-   - emails
-   - phone numbers
-   - report IDs
-   - collection dates
-   - report dates
-   - doctor/hospital information
+3. Do NOT guess missing values.
 
-4. Extract only actual laboratory tests.
+4. Do NOT invent a patient name.
 
-5. Do NOT include:
-   - section headings
-   - units
-   - reference ranges
-   - "TEST DESCRIPTION"
-   - "RESULT"
-   - "REF RANGE"
+5. If a patient name is not clearly present, return "".
 
-6. Correct obvious OCR mistakes in test names.
+6. Ignore laboratory/company/clinic names when determining patient name.
 
-7. Pair each test with its correct result.
+7. "Name" followed by an actual person's name can be treated as patient_name.
 
-8. Use the reference range to determine status.
+8. Do NOT treat:
+   - laboratory name
+   - hospital name
+   - clinic name
+   - website
+   - email
+   - phone number
+   - doctor name
+   as patient_name.
 
-9. Status must be exactly one of:
-   "Low"
-   "Normal"
-   "High"
-   ""
+9. Extract every laboratory test whose test name and result/value
+   can be confidently identified.
 
-10. If a reference range is missing or unclear:
-    - still extract the test if its value is clear
-    - set status to ""
+10. Preserve the numerical value exactly when possible.
 
-11. Do NOT calculate a status when the reference range is unavailable.
+11. Preserve the unit when available.
 
-12. Do NOT confuse a reference-range number with the actual test result.
+12. Preserve the reference range when available.
 
-13. For example:
+13. If a unit is not clearly available, return "".
 
-    Haemoglobin
-    15
-    13-17
+14. If a reference range is not clearly available, return "".
 
-    means:
+15. Determine status using the reference range when a reference
+    range is explicitly available.
 
-    test_name = "Haemoglobin"
-    value = "15"
-    status = "Normal"
+16. Status should normally be one of:
+    - "Normal"
+    - "High"
+    - "Low"
+    - "Unknown"
 
-14. Another example:
+17. Do NOT diagnose diseases solely from one laboratory value.
 
-    MCV
-    80.00
-    81-101
+18. health_risks should contain only reasonable observations based
+    on clearly abnormal laboratory values.
 
-    means:
+19. Do not claim that an abnormal laboratory result definitely means
+    the patient has a disease.
 
-    test_name = "MCV"
-    value = "80.00"
-    status = "Low"
+20. The summary should briefly explain the overall report.
 
-15. If a test has no clear value, DO NOT include it.
+21. Advice should contain simple general health advice and,
+    when appropriate, suggest discussing abnormal findings with
+    a qualified healthcare professional.
 
-16. health_risks:
-    Include only clearly abnormal results.
-    Do not invent diseases.
+22. Do not provide medication prescriptions.
 
-17. summary:
-    Give a short, factual summary based ONLY on clearly abnormal
-    laboratory values.
+23. Do not invent medication names.
 
-    If there are no clearly abnormal values, say:
-    "The reported laboratory values are within the provided reference ranges."
+24. Ignore report headers, addresses, phone numbers, emails,
+    websites, report IDs, patient IDs, collection dates, etc.
+    unless needed for patient identification.
 
-    If abnormal values exist, mention ONLY those abnormal values.
+25. IMPORTANT:
+    OCR may separate a test name and value across multiple lines.
+    Reconstruct them when the relationship is clear.
 
-    Do NOT say vague phrases such as:
-    "may indicate some health issues."
+26. IMPORTANT:
+    OCR may contain sections such as:
+       HAEMATOLOGY
+       COMPLETE BLOOD COUNT
+       RBC INDICES
+       PLATELET INDICES
 
-18. health_risks:
-    Mention only clearly abnormal results.
+    These are section names, NOT individual tests.
 
-    Example:
-    "MCV is below the provided reference range."
+27. Extract individual tests such as:
+       Haemoglobin
+       Total Leucocyte Count
+       Neutrophils
+       Lymphocytes
+       Eosinophils
+       Monocytes
+       Basophils
+       Absolute Neutrophils
+       Absolute Lymphocytes
+       RBC Count
+       MCV
+       MCH
+       MCHC
+       Hct
+       RDW-CV
+       RDW-SD
+       Platelet Count
+       MPV
+    whenever their values are clearly present.
 
-    Do NOT convert a laboratory abnormality into a disease diagnosis.
+28. Do not confuse reference ranges with result values.
 
-19. advice:
-    Give 1 or 2 short general recommendations.
+29. For example, if OCR contains:
 
-    If abnormal values exist:
-    "Discuss the abnormal results with a healthcare professional."
+       Haemoglobin
+       15
+       13-17
 
-    Do NOT prescribe medicines.
+    return:
 
-20. IMPORTANT:
-    Never assign Low or High status unless the OCR clearly provides
-    both the test value and its corresponding reference range.
+       test_name = "Haemoglobin"
+       value = "15"
+       reference_range = "13-17"
+       status = "Normal"
 
-21. If the reference range is missing or unclear:
-    status = ""
+30. If OCR contains:
 
-22. Do not guess the reference range from medical knowledge.
-    Use ONLY the reference range visible in the OCR.
+       MCV
+       80.00
+       81-101
+       fL
 
-23. Return ONLY valid JSON.
+    return:
 
-24. Do NOT return markdown.
+       test_name = "MCV"
+       value = "80.00"
+       reference_range = "81-101"
+       unit = "fL"
+       status = "Low"
 
-25. Do NOT return ```json.
+31. If OCR contains:
 
-26. Every JSON key must use double quotes.
+       MCHC
+       37.50
+       31.5-34.5
 
-EXPECTED JSON:
+    return:
+
+       test_name = "MCHC"
+       value = "37.50"
+       reference_range = "31.5-34.5"
+       status = "High"
+
+32. If a result is exactly at the reference boundary, treat it as
+    "Normal" unless the report itself indicates otherwise.
+
+33. Return ONLY valid JSON.
+
+JSON FORMAT:
 
 {{
     "patient_name": "",
@@ -206,7 +260,9 @@ EXPECTED JSON:
         {{
             "test_name": "",
             "value": "",
-            "status": "Low/Normal/High"
+            "unit": "",
+            "reference_range": "",
+            "status": ""
         }}
     ],
     "health_risks": [],
@@ -219,17 +275,23 @@ OCR TEXT:
 {extracted_text}
 """
 
-        completion = client.chat.completions.create(
+    # --------------------------------------------------------
+    # GROQ REQUEST
+    # --------------------------------------------------------
 
+    try:
+
+        completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
 
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are a medical laboratory report analyzer. "
-                        "Return ONLY valid JSON. "
-                        "Never invent medical information."
+                        "You are a careful laboratory report "
+                        "OCR correction and analysis assistant. "
+                        "Return only valid JSON. "
+                        "Never invent laboratory values."
                     )
                 },
                 {
@@ -244,161 +306,163 @@ OCR TEXT:
 
             temperature=0,
 
-            max_tokens=1200
+            max_tokens=2500
         )
 
         response = completion.choices[0].message.content
 
-        print("========== RAW LAB AI RESPONSE ==========")
+        print("\n========== RAW GROQ LAB RESPONSE ==========")
         print(response)
-        print("=========================================")
+        print("===========================================\n")
+
+        # ----------------------------------------------------
+        # CLEAN JSON
+        # ----------------------------------------------------
 
         cleaned = clean_json(response)
 
-        try:
+        if not cleaned:
+            print("ERROR: Empty AI response")
+            return fallback_result()
 
-            result = json.loads(cleaned)
+        # ----------------------------------------------------
+        # PARSE JSON
+        # ----------------------------------------------------
 
-        except json.JSONDecodeError:
+        result = json.loads(cleaned)
 
-            print("JSON parsing failed. Attempting repair...")
+        # ----------------------------------------------------
+        # ENSURE REQUIRED FIELDS EXIST
+        # ----------------------------------------------------
 
-            repair_prompt = f"""
-Fix the following invalid JSON.
+        if not isinstance(result, dict):
+            return fallback_result()
 
-Rules:
-- Return ONLY valid JSON.
-- Do not add information.
-- Do not remove information.
-- Use double quotes.
-- No markdown.
+        result.setdefault("patient_name", "")
+        result.setdefault("tests", [])
+        result.setdefault("health_risks", [])
+        result.setdefault(
+            "summary",
+            "No summary generated."
+        )
+        result.setdefault("advice", [])
 
-INVALID JSON:
+        # ----------------------------------------------------
+        # SAFETY CHECK TYPES
+        # ----------------------------------------------------
 
-{cleaned}
-"""
-
-            repaired = client.chat.completions.create(
-
-                model="llama-3.3-70b-versatile",
-
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Return only valid JSON."
-                    },
-                    {
-                        "role": "user",
-                        "content": repair_prompt
-                    }
-                ],
-
-                response_format={
-                    "type": "json_object"
-                },
-
-                temperature=0,
-
-                max_tokens=1200
-            )
-
-            repaired_text = repaired.choices[0].message.content
-
-            repaired_text = clean_json(repaired_text)
-
-            result = json.loads(repaired_text)
-
-        # =================================================
-        # SAFETY / OUTPUT NORMALIZATION
-        # =================================================
-
-        if "patient_name" not in result:
-            result["patient_name"] = ""
-
-        if "tests" not in result:
+        if not isinstance(result["tests"], list):
             result["tests"] = []
 
-        if "health_risks" not in result:
+        if not isinstance(result["health_risks"], list):
             result["health_risks"] = []
 
-        if "summary" not in result:
-            result["summary"] = ""
-
-        if "advice" not in result:
+        if not isinstance(result["advice"], list):
             result["advice"] = []
 
-        # -------------------------------------------------
-        # Remove incomplete tests
-        # -------------------------------------------------
+        # ----------------------------------------------------
+        # CLEAN TEST OBJECTS
+        # ----------------------------------------------------
 
-        valid_tests = []
+        cleaned_tests = []
 
         for test in result["tests"]:
 
             if not isinstance(test, dict):
                 continue
 
-            test_name = str(
-                test.get("test_name", "")
-            ).strip()
+            cleaned_test = {
+                "test_name": str(
+                    test.get("test_name", "")
+                ).strip(),
 
-            value = str(
-                test.get("value", "")
-            ).strip()
+                "value": str(
+                    test.get("value", "")
+                ).strip(),
 
-            status = str(
-                test.get("status", "")
-            ).strip()
+                "unit": str(
+                    test.get("unit", "")
+                ).strip(),
 
-            if not test_name or not value:
-                continue
+                "reference_range": str(
+                    test.get("reference_range", "")
+                ).strip(),
 
-            if status not in ["Low", "Normal", "High", ""]:
-                status = ""
+                "status": str(
+                    test.get("status", "Unknown")
+                ).strip()
+            }
 
-            valid_tests.append({
-                "test_name": test_name,
-                "value": value,
-                "status": status
-            })
+            # Only keep tests with a name and value
+            if (
+                cleaned_test["test_name"]
+                and cleaned_test["value"]
+            ):
+                cleaned_tests.append(cleaned_test)
 
-        result["tests"] = valid_tests
+        result["tests"] = cleaned_tests
+
+        # ----------------------------------------------------
+        # CLEAN RISKS
+        # ----------------------------------------------------
+
+        result["health_risks"] = [
+            str(x).strip()
+            for x in result["health_risks"]
+            if str(x).strip()
+        ]
+
+        # ----------------------------------------------------
+        # CLEAN ADVICE
+        # ----------------------------------------------------
+
+        result["advice"] = [
+            str(x).strip()
+            for x in result["advice"]
+            if str(x).strip()
+        ]
+
+        # ----------------------------------------------------
+        # SUMMARY
+        # ----------------------------------------------------
+
+        result["summary"] = str(
+            result.get("summary", "")
+        ).strip()
+
+        if not result["summary"]:
+            result["summary"] = (
+                "Laboratory report analyzed successfully."
+            )
+
+        print("\n========== FINAL LAB RESULT ==========")
+        print(json.dumps(result, indent=4))
+        print("======================================\n")
 
         return result
 
+    # --------------------------------------------------------
+    # JSON ERROR
+    # --------------------------------------------------------
+
+    except json.JSONDecodeError as e:
+
+        print("\nJSON PARSE ERROR:")
+        print(str(e))
+        print("AI RESPONSE:")
+        print(response if "response" in locals() else "NO RESPONSE")
+
+        return fallback_result()
+
+    # --------------------------------------------------------
+    # GROQ / API / OTHER ERROR
+    # --------------------------------------------------------
+
     except Exception as e:
 
-        import traceback
+        print("\n========== LAB ANALYSIS ERROR ==========")
+        print(type(e).__name__)
+        print(str(e))
+        print("========================================\n")
 
-        print("========== LAB AI ERROR ==========")
-
-        traceback.print_exc()
-
-        print("==================================")
-
-        return {
-            "patient_name": "",
-            "tests": [],
-            "health_risks": [],
-            "summary": "Unable to analyze the laboratory report.",
-            "advice": [
-                "Please upload a clearer laboratory report."
-            ]
-        }
-
-
-# =========================================================
-# OPTIONAL ALIAS
-# =========================================================
-# Keep this only if main.py imports extract_lab_text.
-# Your current main.py does import it.
-# =========================================================
-
-def extract_lab_text(image_path):
-    """
-    Uses the common OCR function from ocr_utils.py.
-    """
-
-    from ocr.ocr_utils import extract_text
-
-    return extract_text(image_path)
+        return fallback_result()
