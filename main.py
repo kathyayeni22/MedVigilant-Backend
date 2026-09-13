@@ -1,40 +1,65 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
-from fastapi import Query
-from fastapi import UploadFile, File
-import shutil
+
 import os
+import shutil
+import asyncio
+import time
+import traceback
+
 from dotenv import load_dotenv
-
-load_dotenv()
-
 # Database
 from database import init_db
 from database1 import engine
 from models import *
 
 # Services
+# -----------------------------
+# SERVICES
+# -----------------------------
+
 from services.medicine_reminder import generate_reminders
 from services.medicine_service import validate_medicine_data
+
 from services.ai_chatbot import (
     get_ai_response,
     get_chat_history,
     clear_chat_history
 )
 
-from prescription import analyze_prescription
+from services.prescription import analyze_prescription
 from services.lab_report_reader import analyze_lab_report
 from services.doctor_recommender import recommend_doctor
 
-# ML Predictors
-from predictors.predict_symptoms import predict_diseases
-from predictors.train_food_model import recommend_food
-from predictors.train_bmi_model import predict_bmi
-from predictors.train_lab_test_model import predict_lab, recommend_lab_tests_from_symptoms
-from predictors.train_mental_health_model import predict_mental_health
+
+# -----------------------------
+# OCR
+# -----------------------------
+
 from ocr.ocr_utils import extract_text
+
+
+# -----------------------------
+# ML PREDICTORS
+# -----------------------------
+
+from predictors.predict_symptoms import predict_diseases
+
+from predictors.train_food_model import recommend_food
+
+from predictors.train_bmi_model import predict_bmi
+
+from predictors.train_lab_test_model import (
+    predict_lab,
+    recommend_lab_tests_from_symptoms
+)
+
+from predictors.train_mental_health_model import (
+    predict_mental_health
+)
+
 
 Base.metadata.create_all(bind=engine)
 
@@ -108,13 +133,17 @@ def health():
     }
 
 # -----------------------------
-# LAB TEST RESULT ANALYSIS
+# INDIVIDUAL LAB TEST ANALYSIS
 # -----------------------------
 
 @app.post("/lab-tests")
 def lab_test_result(data: LabResultRequest):
+
     try:
-        result = predict_lab(data.test_name, data.value)
+        result = predict_lab(
+            data.test_name,
+            data.value
+        )
 
         return {
             "status": "success",
@@ -122,10 +151,20 @@ def lab_test_result(data: LabResultRequest):
             "value": data.value,
             "result": result
         }
+
     except Exception as e:
-        return {"status": "error", "message": str(e)}
 
+        print("\n========== INDIVIDUAL LAB TEST ERROR ==========")
+        print("ERROR:", str(e))
+        traceback.print_exc()
+        print("===============================================\n")
 
+        return {
+            "status": "error",
+            "test_name": data.test_name,
+            "value": data.value,
+            "message": str(e)
+        }
 # -----------------------------
 # LAB TEST SUGGESTION (FROM SYMPTOMS)
 # -----------------------------
@@ -486,87 +525,37 @@ def clear_chat(user_id: str):
 @app.post("/read-prescription")
 async def read_prescription(file: UploadFile = File(...)):
 
-    try:
-
-        upload_folder = "uploads"
-        os.makedirs(upload_folder, exist_ok=True)
-
-        file_path = os.path.join(
-            upload_folder,
-            file.filename
-        )
-
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        # OCR
-        extracted_text = extract_text(file_path)
-
-        print("\n========== OCR OUTPUT ==========")
-        print(extracted_text)
-        print("================================\n")
-
-        # AI analysis
-        ai_summary = analyze_prescription(extracted_text)
-
-        # Delete uploaded file
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
-        return {
-            "status": "success",
-            "extracted_text": extracted_text,
-            "ai_summary": ai_summary
-        }
-
-    except Exception as e:
-
-        import traceback
-        traceback.print_exc()
-
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-# -----------------------------
-# LAB REPORT READER
-# -----------------------------
-# -----------------------------
-# LAB REPORT READER
-# -----------------------------
-
-@app.post("/read-lab-report")
-async def read_lab_report(file: UploadFile = File(...)):
-
     file_path = None
 
     try:
-        print("\n========== LAB REPORT START ==========")
-
-        # -----------------------------
-        # Validate file
-        # -----------------------------
-
-        if not file.filename:
-            return {
-                "status": "error",
-                "message": "No file selected."
-            }
-
-        # -----------------------------
-        # Save uploaded file
-        # -----------------------------
+        print("\n========== PRESCRIPTION START ==========")
 
         upload_folder = "uploads"
         os.makedirs(upload_folder, exist_ok=True)
 
-        file_path = os.path.join(
-            upload_folder,
-            file.filename
+        safe_filename = os.path.basename(
+            file.filename or "prescription.png"
         )
 
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        file_path = os.path.join(
+            upload_folder,
+            safe_filename
+        )
+
+        print("FILE NAME:", safe_filename)
+
+        contents = await file.read()
+
+        print("FILE SIZE:", len(contents), "bytes")
+
+        if not contents:
+            return {
+                "status": "error",
+                "message": "Uploaded file is empty."
+            }
+
+        with open(file_path, "wb") as f:
+            f.write(contents)
 
         print("FILE SAVED:", file_path)
 
@@ -574,21 +563,32 @@ async def read_lab_report(file: UploadFile = File(...)):
         # OCR
         # -----------------------------
 
-        extracted_text = extract_text(file_path)
+        print("STARTING RAPIDOCR...")
 
-        print("\n========== OCR OUTPUT ==========")
+        extracted_text = await asyncio.to_thread(
+            extract_text,
+            file_path
+        )
+
+        print("OCR FINISHED")
+        print("OCR LENGTH:", len(extracted_text or ""))
+
+        print("\n========== PRESCRIPTION OCR ==========")
         print(extracted_text)
-        print("================================\n")
+        print("======================================\n")
 
         # -----------------------------
-        # AI LAB REPORT ANALYSIS
+        # AI ANALYSIS
         # -----------------------------
 
-        ai_summary = analyze_lab_report(extracted_text)
+        print("STARTING PRESCRIPTION AI ANALYSIS...")
 
-        print("\n========== AI LAB SUMMARY ==========")
-        print(ai_summary)
-        print("====================================\n")
+        ai_summary = await asyncio.to_thread(
+            analyze_prescription,
+            extracted_text
+        )
+
+        print("PRESCRIPTION AI ANALYSIS FINISHED")
 
         return {
             "status": "success",
@@ -599,7 +599,11 @@ async def read_lab_report(file: UploadFile = File(...)):
     except Exception as e:
 
         import traceback
+
+        print("\n========== PRESCRIPTION ERROR ==========")
+        print("ERROR:", str(e))
         traceback.print_exc()
+        print("========================================\n")
 
         return {
             "status": "error",
@@ -608,14 +612,271 @@ async def read_lab_report(file: UploadFile = File(...)):
 
     finally:
 
-        # -----------------------------
-        # DELETE TEMPORARY FILE
-        # -----------------------------
+        if file_path and os.path.exists(file_path):
+
+            try:
+                os.remove(file_path)
+                print("TEMP FILE DELETED:", file_path)
+
+            except Exception as e:
+
+                print(
+                    "TEMP FILE DELETE ERROR:",
+                    str(e)
+                )
+
+        print("========== PRESCRIPTION END ==========\n")
+# -----------------------------
+# LAB REPORT READER
+# -----------------------------
+# -----------------------------# LAB REPORT READER
+# -----------------------------
+
+@app.post("/read-lab-report")
+async def read_lab_report(file: UploadFile = File(...)):
+
+    file_path = None
+    start_time = time.time()
+
+    try:
+
+        print("\n========================================")
+        print("       LAB REPORT PROCESSING START")
+        print("========================================")
+
+        # ---------------------------------
+        # 1. Validate file
+        # ---------------------------------
+
+        if not file.filename:
+            return {
+                "status": "error",
+                "message": "No file was uploaded."
+            }
+
+        # ---------------------------------
+        # 2. Create uploads directory
+        # ---------------------------------
+
+        upload_folder = "uploads"
+
+        os.makedirs(
+            upload_folder,
+            exist_ok=True
+        )
+
+        # ---------------------------------
+        # 3. Create safe filename
+        # ---------------------------------
+
+        safe_filename = os.path.basename(
+            file.filename
+        )
+
+        file_path = os.path.join(
+            upload_folder,
+            safe_filename
+        )
+
+        print("FILE NAME:", safe_filename)
+
+        # ---------------------------------
+        # 4. Read uploaded file
+        # ---------------------------------
+
+        contents = await file.read()
+
+        print(
+            "FILE SIZE:",
+            len(contents),
+            "bytes"
+        )
+
+        if not contents:
+            return {
+                "status": "error",
+                "message": "Uploaded file is empty."
+            }
+
+        # ---------------------------------
+        # 5. Save file
+        # ---------------------------------
+
+        with open(file_path, "wb") as f:
+            f.write(contents)
+
+        print("FILE SAVED:", file_path)
+
+        # ---------------------------------
+        # 6. OCR
+        # ---------------------------------
+
+        print("\nSTARTING RAPIDOCR...")
+
+        ocr_start = time.time()
+
+        extracted_text = await asyncio.to_thread(
+            extract_text,
+            file_path
+        )
+
+        ocr_time = round(
+            time.time() - ocr_start,
+            2
+        )
+
+        extracted_text = extracted_text or ""
+
+        print("OCR FINISHED")
+        print("OCR TIME:", ocr_time, "seconds")
+        print(
+            "OCR TEXT LENGTH:",
+            len(extracted_text)
+        )
+
+        print("\n========== OCR OUTPUT ==========")
+        print(extracted_text)
+        print("================================\n")
+
+        # ---------------------------------
+        # 7. Check OCR result
+        # ---------------------------------
+
+        if len(extracted_text.strip()) < 10:
+
+            return {
+                "status": "error",
+                "extracted_text": extracted_text,
+                "ai_summary": {
+                    "patient_name": "",
+                    "tests": [],
+                    "health_risks": [
+                        "Unable to extract sufficient text from the report."
+                    ],
+                    "summary": (
+                        "The laboratory report could not be "
+                        "read properly by OCR."
+                    ),
+                    "advice": [
+                        "Please upload a clearer laboratory report."
+                    ]
+                }
+            }
+
+        # ---------------------------------
+        # 8. Analyze OCR text
+        # ---------------------------------
+
+        print("\nSTARTING LAB ANALYSIS...")
+
+        analysis_start = time.time()
+
+        # IMPORTANT:
+        # analyze_lab_report is synchronous,
+        # so run it in a separate thread.
+
+        lab_analysis = await asyncio.to_thread(
+            analyze_lab_report,
+            extracted_text
+        )
+
+        analysis_time = round(
+            time.time() - analysis_start,
+            2
+        )
+
+        print("LAB ANALYSIS FINISHED")
+        print(
+            "LAB ANALYSIS TIME:",
+            analysis_time,
+            "seconds"
+        )
+
+        # ---------------------------------
+        # 9. Make sure analysis is valid
+        # ---------------------------------
+
+        if not isinstance(lab_analysis, dict):
+
+            lab_analysis = {
+                "patient_name": "",
+                "tests": [],
+                "health_risks": [],
+                "summary": str(lab_analysis),
+                "advice": []
+            }
+
+        # ---------------------------------
+        # 10. Total processing time
+        # ---------------------------------
+
+        total_time = round(
+            time.time() - start_time,
+            2
+        )
+
+        print(
+            "\nTOTAL PROCESSING TIME:",
+            total_time,
+            "seconds"
+        )
+
+        print("========================================")
+        print("       LAB REPORT PROCESSING END")
+        print("========================================\n")
+
+        # ---------------------------------
+        # 11. Final response
+        # ---------------------------------
+
+        return {
+            "status": "success",
+            "extracted_text": extracted_text,
+            "ai_summary": lab_analysis,
+            "processing_time": total_time
+        }
+
+    except Exception as e:
+
+        print("\n========================================")
+        print("        LAB REPORT PROCESSING ERROR")
+        print("========================================")
+
+        print("ERROR:", str(e))
+
+        traceback.print_exc()
+
+        print("========================================\n")
+
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+    finally:
+
+        # ---------------------------------
+        # Delete temporary file
+        # ---------------------------------
 
         if file_path and os.path.exists(file_path):
-            os.remove(file_path)
 
-        print("========== LAB REPORT END ==========\n")
+            try:
+
+                os.remove(file_path)
+
+                print(
+                    "TEMP FILE DELETED:",
+                    file_path
+                )
+
+            except Exception as e:
+
+                print(
+                    "TEMP FILE DELETE ERROR:",
+                    str(e)
+                )
+
 # -----------------------------
 # AI DOCTOR RECOMMENDATION
 # -----------------------------

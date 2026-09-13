@@ -1,468 +1,1067 @@
-import os
-import json
-from groq import Groq
-from dotenv import load_dotenv
+# services/lab_report_reader.py
 
-load_dotenv()
-
-# ============================================================
-# GROQ CLIENT
-# ============================================================
-
-api_key = os.getenv("GROQ_API_KEY")
-
-if not api_key:
-    raise RuntimeError("GROQ_API_KEY is not configured.")
-
-client = Groq(api_key=api_key)
+import re
+import traceback
 
 
 # ============================================================
-# CLEAN JSON
+# REFERENCE RANGES
 # ============================================================
 
-def clean_json(text):
-    """
-    Removes markdown code fences and extracts the JSON object.
-    """
+REFERENCE_RANGES = {
+    "Haemoglobin": (13.0, 17.0),
+    "Total Leucocyte Count": (4000.0, 10000.0),
+
+    "Neutrophils": (40.0, 80.0),
+    "Lymphocytes": (20.0, 40.0),
+    "Eosinophils": (1.0, 6.0),
+    "Monocytes": (2.0, 10.0),
+    "Basophils": (0.0, 1.0),
+
+    "Absolute Neutrophils": (2000.0, 7000.0),
+    "Absolute Lymphocytes": (1000.0, 3000.0),
+    "Absolute Eosinophils": (20.0, 500.0),
+    "Absolute Monocytes": (200.0, 1000.0),
+
+    "RBC Count": (4.5, 5.5),
+
+    "MCV": (81.0, 101.0),
+    "MCH": (27.0, 32.0),
+    "MCHC": (31.5, 34.5),
+    "Hct": (40.0, 50.0),
+
+    "RDW-CV": (11.6, 14.0),
+    "RDW-SD": (39.0, 46.0),
+
+    "Platelet Count": (150000.0, 410000.0),
+    "MPV": (7.5, 11.5),
+}
+
+
+# ============================================================
+# OCR CLEANING
+# ============================================================
+
+def clean_ocr_text(text: str) -> str:
 
     if not text:
         return ""
 
-    text = text.strip()
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
 
-    # Remove markdown fences
-    text = text.replace("```json", "")
-    text = text.replace("```JSON", "")
-    text = text.replace("```", "")
+    replacements = {
+        "COMPLETEBLOODCOUNT": "COMPLETE BLOOD COUNT",
+        "TESTDESCRIPTION": "TEST DESCRIPTION",
+        "REF.RANGE": "REF RANGE",
 
-    # Find JSON object
-    start = text.find("{")
-    end = text.rfind("}")
+        "DifferentialLeucocyteCount":
+            "Differential Leucocyte Count",
 
-    if start != -1 and end != -1:
-        text = text[start:end + 1]
+        "AbsoluteLeucocyteCount":
+            "Absolute Leucocyte Count",
 
-    return text.strip()
+        "RBCIndices":
+            "RBC Indices",
+
+        "PlateletsIndices":
+            "Platelets Indices",
+
+        "TotalLeucocyteCount":
+            "Total Leucocyte Count",
+
+        "PatientID":
+            "Patient ID",
+
+        "Age/Gender":
+            "Age / Gender",
+
+        "ReportID":
+            "Report ID",
+
+        "ReferredBy":
+            "Referred By",
+
+        "ReportDate":
+            "Report Date",
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    # Normalize unicode dashes
+    text = text.replace("–", "-")
+    text = text.replace("—", "-")
+    text = text.replace("−", "-")
+
+    # Normalize unicode colon
+    text = text.replace("：", ":")
+
+    return text
 
 
 # ============================================================
-# SAFE FALLBACK
+# LINE NORMALIZATION
 # ============================================================
 
-def fallback_result():
+def get_clean_lines(text: str):
+
+    text = clean_ocr_text(text)
+
+    lines = []
+
+    for line in text.split("\n"):
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        # Normalize multiple spaces
+        line = re.sub(r"\s+", " ", line)
+
+        # Normalize spaces around hyphen
+        line = re.sub(r"\s*-\s*", "-", line)
+
+        lines.append(line)
+
+    return lines
+
+
+# ============================================================
+# NUMBER PARSER
+# ============================================================
+
+def extract_number(value):
+
+    if value is None:
+        return None
+
+    match = re.search(
+        r"[-+]?\d+(?:\.\d+)?",
+        str(value)
+    )
+
+    if not match:
+        return None
+
+    try:
+        return float(match.group())
+
+    except ValueError:
+        return None
+
+
+# ============================================================
+# RANGE PARSER
+# ============================================================
+
+def extract_range(value):
+
+    if not value:
+        return None
+
+    match = re.search(
+        r"([-+]?\d+(?:\.\d+)?)\s*-\s*"
+        r"([-+]?\d+(?:\.\d+)?)",
+        str(value)
+    )
+
+    if not match:
+        return None
+
+    try:
+        return (
+            float(match.group(1)),
+            float(match.group(2))
+        )
+
+    except ValueError:
+        return None
+
+
+# ============================================================
+# PATIENT NAME
+# ============================================================
+
+def extract_patient_name(text: str) -> str:
+
+    lines = get_clean_lines(text)
+
+    metadata = {
+        "patientid",
+        "patient id",
+        "age/gender",
+        "age / gender",
+        "reportid",
+        "report id",
+        "referredby",
+        "referred by",
+        "collectiondate",
+        "collection date:",
+        "phoneno.",
+        "phone no.",
+        "reportdate",
+        "report date",
+        "haematology",
+    }
+
+    for i, line in enumerate(lines):
+
+        normalized = (
+            line.lower()
+            .replace(":", "")
+            .strip()
+        )
+
+        if normalized != "name":
+            continue
+
+        if i + 1 >= len(lines):
+            return ""
+
+        next_line = lines[i + 1].strip()
+
+        next_normalized = (
+            next_line
+            .lower()
+            .replace(":", "")
+            .strip()
+        )
+
+        if next_normalized in metadata:
+            return ""
+
+        if next_normalized.startswith("patientid"):
+            return ""
+
+        if next_normalized.startswith("patient id"):
+            return ""
+
+        # Avoid obvious metadata
+        if (
+            "@" in next_line
+            or "http" in next_line.lower()
+            or re.search(r"\d{5,}", next_line)
+        ):
+            return ""
+
+        return next_line
+
+    return ""
+
+
+# ============================================================
+# STATUS
+# ============================================================
+
+def get_status(value, low, high):
+
+    if value is None:
+        return "Unknown"
+
+    if value < low:
+        return "Low"
+
+    if value > high:
+        return "High"
+
+    return "Normal"
+
+
+# ============================================================
+# TEST CREATION
+# ============================================================
+
+def make_test(
+    test_name,
+    value,
+    unit="",
+    reference_range=""
+):
+
+    if value is None:
+        return None
+
+    if test_name in REFERENCE_RANGES:
+
+        low, high = REFERENCE_RANGES[test_name]
+
+        status = get_status(
+            value,
+            low,
+            high
+        )
+
+    else:
+
+        status = "Unknown"
+
     return {
-        "patient_name": "",
-        "tests": [],
-        "health_risks": [],
-        "summary": "Unable to analyze the laboratory report.",
-        "advice": [
-            "Please upload a clearer laboratory report."
-        ]
+        "test_name": test_name,
+        "value": value,
+        "unit": unit,
+        "reference_range": reference_range,
+        "status": status
     }
 
 
 # ============================================================
-# LAB REPORT ANALYSIS
+# FIND TEST VALUE
 # ============================================================
 
-def analyze_lab_report(extracted_text):
+def find_test_value(
+    lines,
+    test_name,
+    reference_range
+):
+    """
+    Searches line-by-line for:
 
-    # --------------------------------------------------------
-    # Validate OCR text
-    # --------------------------------------------------------
+        Test Name
+        Result
+        Reference Range
 
-    if not extracted_text or len(extracted_text.strip()) < 20:
-        return fallback_result()
+    Example:
 
-    print("\n========== LAB OCR TEXT ==========")
-    print(extracted_text)
-    print("===================================\n")
+        Haemoglobin
+        15
+        13-17
+    """
 
-    # --------------------------------------------------------
-    # AI PROMPT
-    # --------------------------------------------------------
+    target = test_name.lower().strip()
 
-    prompt = f"""
-You are a laboratory report analysis assistant.
+    for i, line in enumerate(lines):
 
-You will receive OCR text extracted from a medical laboratory report.
+        current = line.lower().strip()
 
-The OCR text may contain:
-- missing spaces
-- incorrect characters
-- broken words
-- misplaced units
-- table formatting problems
-- repeated text
-- headers mixed with test results
+        if current != target:
+            continue
 
-Your task is to carefully reconstruct the laboratory test information
-from the OCR text.
+        # Search the next few lines
+        for j in range(i + 1, min(i + 6, len(lines))):
 
-IMPORTANT RULES:
+            candidate = lines[j].strip()
 
-1. Do NOT invent laboratory values.
+            # Stop if another known test begins
+            if candidate.lower() in {
+                name.lower()
+                for name in REFERENCE_RANGES
+            }:
+                if candidate.lower() != target:
+                    break
 
-2. Do NOT invent tests that are not present in the OCR.
+            # If this is the expected reference range,
+            # the result should be immediately before it.
+            if candidate == reference_range:
 
-3. Do NOT guess missing values.
+                # Search backwards for the nearest number
+                for k in range(j - 1, i, -1):
 
-4. Do NOT invent a patient name.
+                    value = extract_number(lines[k])
 
-5. If a patient name is not clearly present, return "".
+                    if value is not None:
 
-6. Ignore laboratory/company/clinic names when determining patient name.
+                        return value
 
-7. "Name" followed by an actual person's name can be treated as patient_name.
+                return None
 
-8. Do NOT treat:
-   - laboratory name
-   - hospital name
-   - clinic name
-   - website
-   - email
-   - phone number
-   - doctor name
-   as patient_name.
+    return None
 
-9. Extract every laboratory test whose test name and result/value
-   can be confidently identified.
 
-10. Preserve the numerical value exactly when possible.
+# ============================================================
+# RBC SPECIAL CASE
+# ============================================================
 
-11. Preserve the unit when available.
+def find_rbc_count(lines):
 
-12. Preserve the reference range when available.
+    for i, line in enumerate(lines):
 
-13. If a unit is not clearly available, return "".
+        normalized = (
+            line.lower()
+            .replace(" ", "")
+        )
 
-14. If a reference range is not clearly available, return "".
+        if normalized not in {
+            "rbccount",
+            "rbc count"
+        }:
+            continue
 
-15. Determine status using the reference range when a reference
-    range is explicitly available.
+        # Normal format:
+        #
+        # RBC Count
+        # 5
+        #
+        # or
+        #
+        # RBC Count
+        # 4.5-5.5
+        # Mil-
+        # 5
+        # lion/cumm
 
-16. Status should normally be one of:
-    - "Normal"
-    - "High"
-    - "Low"
-    - "Unknown"
+        for j in range(i + 1, min(i + 7, len(lines))):
 
-17. Do NOT diagnose diseases solely from one laboratory value.
+            current = lines[j]
 
-18. health_risks should contain only reasonable observations based
-    on clearly abnormal laboratory values.
+            # If this is the reference range,
+            # continue searching for actual result.
+            if extract_range(current):
+                continue
 
-19. Do not claim that an abnormal laboratory result definitely means
-    the patient has a disease.
+            value = extract_number(current)
 
-20. The summary should briefly explain the overall report.
+            if value is None:
+                continue
 
-21. Advice should contain simple general health advice and,
-    when appropriate, suggest discussing abnormal findings with
-    a qualified healthcare professional.
+            # Avoid accidentally taking the reference
+            # range lower/upper number.
+            if value in (4.5, 5.5):
+                continue
 
-22. Do not provide medication prescriptions.
+            # RBC is normally around 4-6.
+            if 3.0 <= value <= 8.0:
 
-23. Do not invent medication names.
+                return value
 
-24. Ignore report headers, addresses, phone numbers, emails,
-    websites, report IDs, patient IDs, collection dates, etc.
-    unless needed for patient identification.
+    return None
 
-25. IMPORTANT:
-    OCR may separate a test name and value across multiple lines.
-    Reconstruct them when the relationship is clear.
 
-26. IMPORTANT:
-    OCR may contain sections such as:
-       HAEMATOLOGY
-       COMPLETE BLOOD COUNT
-       RBC INDICES
-       PLATELET INDICES
+# ============================================================
+# TEST EXTRACTION
+# ============================================================
 
-    These are section names, NOT individual tests.
+def extract_tests(text: str):
 
-27. Extract individual tests such as:
-       Haemoglobin
-       Total Leucocyte Count
-       Neutrophils
-       Lymphocytes
-       Eosinophils
-       Monocytes
-       Basophils
-       Absolute Neutrophils
-       Absolute Lymphocytes
-       RBC Count
-       MCV
-       MCH
-       MCHC
-       Hct
-       RDW-CV
-       RDW-SD
-       Platelet Count
-       MPV
-    whenever their values are clearly present.
+    lines = get_clean_lines(text)
 
-28. Do not confuse reference ranges with result values.
+    print("\n========== LAB OCR LINES ==========")
 
-29. For example, if OCR contains:
+    for index, line in enumerate(lines):
 
-       Haemoglobin
-       15
-       13-17
+        print(index, ":", line)
 
-    return:
+    print("====================================\n")
 
-       test_name = "Haemoglobin"
-       value = "15"
-       reference_range = "13-17"
-       status = "Normal"
+    tests = []
 
-30. If OCR contains:
+    # ========================================================
+    # TEST DEFINITIONS
+    # ========================================================
 
-       MCV
-       80.00
-       81-101
-       fL
+    test_definitions = [
 
-    return:
+        (
+            "Haemoglobin",
+            "13-17",
+            "g/dL"
+        ),
 
-       test_name = "MCV"
-       value = "80.00"
-       reference_range = "81-101"
-       unit = "fL"
-       status = "Low"
+        (
+            "Total Leucocyte Count",
+            "4000-10000",
+            "/cumm"
+        ),
 
-31. If OCR contains:
+        (
+            "Neutrophils",
+            "40-80",
+            "%"
+        ),
 
-       MCHC
-       37.50
-       31.5-34.5
+        (
+            "Lymphocytes",
+            "20-40",
+            "%"
+        ),
 
-    return:
+        (
+            "Eosinophils",
+            "1-6",
+            "%"
+        ),
 
-       test_name = "MCHC"
-       value = "37.50"
-       reference_range = "31.5-34.5"
-       status = "High"
+        (
+            "Monocytes",
+            "2-10",
+            "%"
+        ),
 
-32. If a result is exactly at the reference boundary, treat it as
-    "Normal" unless the report itself indicates otherwise.
+        (
+            "Basophils",
+            "0-1",
+            "%"
+        ),
 
-33. Return ONLY valid JSON.
+        (
+            "Absolute Neutrophils",
+            "2000-7000",
+            "/cumm"
+        ),
 
-JSON FORMAT:
+        (
+            "Absolute Lymphocytes",
+            "1000-3000",
+            "/cumm"
+        ),
 
-{{
-    "patient_name": "",
-    "tests": [
-        {{
-            "test_name": "",
-            "value": "",
-            "unit": "",
-            "reference_range": "",
-            "status": ""
-        }}
-    ],
-    "health_risks": [],
-    "summary": "",
-    "advice": []
-}}
+        (
+            "Absolute Eosinophils",
+            "20-500",
+            "/cumm"
+        ),
 
-OCR TEXT:
+        (
+            "Absolute Monocytes",
+            "200-1000",
+            "/cumm"
+        ),
 
-{extracted_text}
-"""
+        (
+            "MCV",
+            "81-101",
+            "fL"
+        ),
 
-    # --------------------------------------------------------
-    # GROQ REQUEST
-    # --------------------------------------------------------
+        (
+            "MCH",
+            "27-32",
+            "pg"
+        ),
+
+        (
+            "MCHC",
+            "31.5-34.5",
+            "g/dL"
+        ),
+
+        (
+            "Hct",
+            "40-50",
+            "%"
+        ),
+
+        (
+            "RDW-CV",
+            "11.6-14.0",
+            "%"
+        ),
+
+        (
+            "RDW-SD",
+            "39-46",
+            "fL"
+        ),
+
+        (
+            "Platelet Count",
+            "150000-410000",
+            "/cumm"
+        ),
+
+        (
+            "MPV",
+            "7.5-11.5",
+            "fL"
+        ),
+    ]
+
+    # ========================================================
+    # NORMAL TESTS
+    # ========================================================
+
+    for test_name, reference_range, unit in test_definitions:
+
+        value = find_test_value(
+            lines,
+            test_name,
+            reference_range
+        )
+
+        if value is None:
+            continue
+
+        test = make_test(
+            test_name,
+            value,
+            unit,
+            reference_range
+        )
+
+        if test:
+            tests.append(test)
+
+    # ========================================================
+    # RBC COUNT
+    # ========================================================
+
+    rbc_value = find_rbc_count(lines)
+
+    if rbc_value is not None:
+
+        tests.append(
+            make_test(
+                "RBC Count",
+                rbc_value,
+                "million/cumm",
+                "4.5-5.5"
+            )
+        )
+
+    # ========================================================
+    # REMOVE DUPLICATES
+    # ========================================================
+
+    unique_tests = []
+
+    seen = set()
+
+    for test in tests:
+
+        name = test["test_name"]
+
+        if name in seen:
+            continue
+
+        seen.add(name)
+
+        unique_tests.append(test)
+
+    # ========================================================
+    # SORT IN REPORT ORDER
+    # ========================================================
+
+    order = [
+        "Haemoglobin",
+        "Total Leucocyte Count",
+        "Neutrophils",
+        "Lymphocytes",
+        "Eosinophils",
+        "Monocytes",
+        "Basophils",
+        "Absolute Neutrophils",
+        "Absolute Lymphocytes",
+        "Absolute Eosinophils",
+        "Absolute Monocytes",
+        "RBC Count",
+        "MCV",
+        "MCH",
+        "MCHC",
+        "Hct",
+        "RDW-CV",
+        "RDW-SD",
+        "Platelet Count",
+        "MPV",
+    ]
+
+    unique_tests.sort(
+        key=lambda x: order.index(x["test_name"])
+        if x["test_name"] in order
+        else 999
+    )
+
+    # ========================================================
+    # DEBUG
+    # ========================================================
+
+    print("\n========== TEST EXTRACTION ==========")
+
+    print(
+        "Tests detected:",
+        len(unique_tests)
+    )
+
+    for test in unique_tests:
+
+        print(
+            f'{test["test_name"]} '
+            f'=> {test["value"]} '
+            f'=> {test["status"]}'
+        )
+
+    print("=====================================\n")
+
+    return unique_tests
+
+
+# ============================================================
+# HEALTH RISKS
+# ============================================================
+
+def generate_health_risks(tests):
+
+    risks = []
+
+    for test in tests:
+
+        name = test["test_name"]
+        status = test["status"]
+
+        if status == "Normal":
+            continue
+
+        if name == "Haemoglobin":
+
+            if status == "Low":
+                risks.append(
+                    "Haemoglobin is below the provided reference range "
+                    "and may warrant evaluation for anaemia."
+                )
+
+            elif status == "High":
+                risks.append(
+                    "Haemoglobin is above the provided reference range."
+                )
+
+        elif name == "MCV":
+
+            if status == "Low":
+                risks.append(
+                    "MCV is below the provided reference range."
+                )
+
+            elif status == "High":
+                risks.append(
+                    "MCV is above the provided reference range."
+                )
+
+        elif name == "MCHC":
+
+            if status == "Low":
+                risks.append(
+                    "MCHC is below the provided reference range."
+                )
+
+            elif status == "High":
+                risks.append(
+                    "MCHC is above the provided reference range."
+                )
+
+        elif name == "Platelet Count":
+
+            if status == "Low":
+                risks.append(
+                    "Platelet count is below the provided reference range."
+                )
+
+            elif status == "High":
+                risks.append(
+                    "Platelet count is above the provided reference range."
+                )
+
+        elif name == "Total Leucocyte Count":
+
+            if status == "Low":
+                risks.append(
+                    "White blood cell count is below the provided reference range."
+                )
+
+            elif status == "High":
+                risks.append(
+                    "White blood cell count is above the provided reference range."
+                )
+
+        elif name == "Neutrophils":
+
+            if status == "Low":
+                risks.append(
+                    "Neutrophil percentage is below the provided reference range."
+                )
+
+            elif status == "High":
+                risks.append(
+                    "Neutrophil percentage is above the provided reference range."
+                )
+
+        elif name == "Lymphocytes":
+
+            if status == "Low":
+                risks.append(
+                    "Lymphocyte percentage is below the provided reference range."
+                )
+
+            elif status == "High":
+                risks.append(
+                    "Lymphocyte percentage is above the provided reference range."
+                )
+
+        elif name == "Hct":
+
+            if status == "Low":
+                risks.append(
+                    "Hematocrit is below the provided reference range."
+                )
+
+            elif status == "High":
+                risks.append(
+                    "Hematocrit is above the provided reference range."
+                )
+
+    return risks
+
+
+# ============================================================
+# SUMMARY
+# ============================================================
+
+def generate_summary(tests):
+
+    if not tests:
+
+        return (
+            "No laboratory test results could be identified "
+            "from the report."
+        )
+
+    normal_count = sum(
+        1
+        for test in tests
+        if test["status"] == "Normal"
+    )
+
+    abnormal_count = sum(
+        1
+        for test in tests
+        if test["status"] in ["High", "Low"]
+    )
+
+    total = len(tests)
+
+    if abnormal_count == 0:
+
+        return (
+            f"The report contains {total} identified test results. "
+            "All identified values are within the provided "
+            "reference ranges."
+        )
+
+    return (
+        f"The report contains {total} identified test results. "
+        f"{normal_count} values are within the provided reference "
+        f"ranges and {abnormal_count} values are outside the "
+        "provided ranges. The abnormal values should be reviewed "
+        "with a healthcare professional."
+    )
+
+
+# ============================================================
+# ADVICE
+# ============================================================
+
+def generate_advice(tests, risks):
+
+    abnormal_tests = [
+        test
+        for test in tests
+        if test["status"] in ["High", "Low"]
+    ]
+
+    if not abnormal_tests:
+
+        return [
+            "Continue maintaining a balanced diet and healthy lifestyle.",
+            "Stay adequately hydrated and maintain regular physical activity.",
+            "Continue routine health check-ups as recommended by your doctor."
+        ]
+
+    advice = []
+
+    for test in abnormal_tests:
+
+        name = test["test_name"]
+        status = test["status"]
+
+        if name == "Haemoglobin" and status == "Low":
+
+            advice.append(
+                "Discuss the low haemoglobin result with a healthcare professional."
+            )
+
+        elif name == "MCV" and status == "Low":
+
+            advice.append(
+                "Discuss the low MCV result with a healthcare professional."
+            )
+
+        elif name == "MCHC" and status == "High":
+
+            advice.append(
+                "Discuss the elevated MCHC result with a healthcare professional."
+            )
+
+        elif name == "Platelet Count":
+
+            advice.append(
+                "Discuss the platelet count with a healthcare professional."
+            )
+
+        elif name == "Total Leucocyte Count":
+
+            advice.append(
+                "Discuss the white blood cell count with a healthcare professional."
+            )
+
+        elif name == "Neutrophils":
+
+            advice.append(
+                "Discuss the neutrophil result with a healthcare professional."
+            )
+
+        elif name == "Lymphocytes":
+
+            advice.append(
+                "Discuss the lymphocyte result with a healthcare professional."
+            )
+
+    advice.append(
+        "Do not interpret an isolated laboratory value as a diagnosis."
+    )
+
+    advice.append(
+        "Consider the reference range and clinical symptoms when interpreting results."
+    )
+
+    advice.append(
+        "Consult a qualified healthcare professional for medical interpretation."
+    )
+
+    unique_advice = []
+
+    for item in advice:
+
+        if item not in unique_advice:
+            unique_advice.append(item)
+
+    return unique_advice[:6]
+
+
+# ============================================================
+# MAIN ANALYSIS
+# ============================================================
+
+def analyze_lab_report(extracted_text: str):
 
     try:
 
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a careful laboratory report "
-                        "OCR correction and analysis assistant. "
-                        "Return only valid JSON. "
-                        "Never invent laboratory values."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-
-            response_format={
-                "type": "json_object"
-            },
-
-            temperature=0,
-
-            max_tokens=2500
-        )
-
-        response = completion.choices[0].message.content
-
-        print("\n========== RAW GROQ LAB RESPONSE ==========")
-        print(response)
-        print("===========================================\n")
+        print("\n========================================")
+        print("       LAB REPORT ANALYSIS START")
+        print("========================================")
 
         # ----------------------------------------------------
-        # CLEAN JSON
+        # Validate OCR
         # ----------------------------------------------------
 
-        cleaned = clean_json(response)
+        if not extracted_text or not extracted_text.strip():
 
-        if not cleaned:
-            print("ERROR: Empty AI response")
-            return fallback_result()
-
-        # ----------------------------------------------------
-        # PARSE JSON
-        # ----------------------------------------------------
-
-        result = json.loads(cleaned)
-
-        # ----------------------------------------------------
-        # ENSURE REQUIRED FIELDS EXIST
-        # ----------------------------------------------------
-
-        if not isinstance(result, dict):
-            return fallback_result()
-
-        result.setdefault("patient_name", "")
-        result.setdefault("tests", [])
-        result.setdefault("health_risks", [])
-        result.setdefault(
-            "summary",
-            "No summary generated."
-        )
-        result.setdefault("advice", [])
-
-        # ----------------------------------------------------
-        # SAFETY CHECK TYPES
-        # ----------------------------------------------------
-
-        if not isinstance(result["tests"], list):
-            result["tests"] = []
-
-        if not isinstance(result["health_risks"], list):
-            result["health_risks"] = []
-
-        if not isinstance(result["advice"], list):
-            result["advice"] = []
-
-        # ----------------------------------------------------
-        # CLEAN TEST OBJECTS
-        # ----------------------------------------------------
-
-        cleaned_tests = []
-
-        for test in result["tests"]:
-
-            if not isinstance(test, dict):
-                continue
-
-            cleaned_test = {
-                "test_name": str(
-                    test.get("test_name", "")
-                ).strip(),
-
-                "value": str(
-                    test.get("value", "")
-                ).strip(),
-
-                "unit": str(
-                    test.get("unit", "")
-                ).strip(),
-
-                "reference_range": str(
-                    test.get("reference_range", "")
-                ).strip(),
-
-                "status": str(
-                    test.get("status", "Unknown")
-                ).strip()
+            return {
+                "patient_name": "",
+                "tests": [],
+                "health_risks": [],
+                "summary": (
+                    "No text could be extracted from "
+                    "the laboratory report."
+                ),
+                "advice": [
+                    "Please upload a clear laboratory report."
+                ]
             }
 
-            # Only keep tests with a name and value
-            if (
-                cleaned_test["test_name"]
-                and cleaned_test["value"]
-            ):
-                cleaned_tests.append(cleaned_test)
-
-        result["tests"] = cleaned_tests
-
         # ----------------------------------------------------
-        # CLEAN RISKS
+        # Patient
         # ----------------------------------------------------
 
-        result["health_risks"] = [
-            str(x).strip()
-            for x in result["health_risks"]
-            if str(x).strip()
-        ]
+        patient_name = extract_patient_name(
+            extracted_text
+        )
 
         # ----------------------------------------------------
-        # CLEAN ADVICE
+        # Extract tests
         # ----------------------------------------------------
 
-        result["advice"] = [
-            str(x).strip()
-            for x in result["advice"]
-            if str(x).strip()
-        ]
+        tests = extract_tests(
+            extracted_text
+        )
+
+        print(
+            "TOTAL TESTS:",
+            len(tests)
+        )
 
         # ----------------------------------------------------
-        # SUMMARY
+        # Risks
         # ----------------------------------------------------
 
-        result["summary"] = str(
-            result.get("summary", "")
-        ).strip()
+        health_risks = generate_health_risks(
+            tests
+        )
 
-        if not result["summary"]:
-            result["summary"] = (
-                "Laboratory report analyzed successfully."
-            )
+        # ----------------------------------------------------
+        # Summary
+        # ----------------------------------------------------
 
-        print("\n========== FINAL LAB RESULT ==========")
-        print(json.dumps(result, indent=4))
-        print("======================================\n")
+        summary = generate_summary(
+            tests
+        )
 
-        return result
+        # ----------------------------------------------------
+        # Advice
+        # ----------------------------------------------------
 
-    # --------------------------------------------------------
-    # JSON ERROR
-    # --------------------------------------------------------
+        advice = generate_advice(
+            tests,
+            health_risks
+        )
 
-    except json.JSONDecodeError as e:
+        print(
+            "PATIENT:",
+            patient_name or "Unknown"
+        )
 
-        print("\nJSON PARSE ERROR:")
-        print(str(e))
-        print("AI RESPONSE:")
-        print(response if "response" in locals() else "NO RESPONSE")
+        print(
+            "RISKS:",
+            len(health_risks)
+        )
 
-        return fallback_result()
+        print("========================================")
+        print("       LAB REPORT ANALYSIS END")
+        print("========================================\n")
 
-    # --------------------------------------------------------
-    # GROQ / API / OTHER ERROR
-    # --------------------------------------------------------
+        return {
+            "patient_name": patient_name,
+            "tests": tests,
+            "health_risks": health_risks,
+            "summary": summary,
+            "advice": advice
+        }
 
     except Exception as e:
 
-        print("\n========== LAB ANALYSIS ERROR ==========")
-        print(type(e).__name__)
-        print(str(e))
+        print("\n========================================")
+        print("       LAB ANALYSIS ERROR")
+        print("========================================")
+
+        print(
+            "ERROR:",
+            str(e)
+        )
+
+        traceback.print_exc()
+
         print("========================================\n")
 
-        return fallback_result()
+        return {
+            "patient_name": "",
+            "tests": [],
+            "health_risks": [
+                "The laboratory report could not be fully analyzed."
+            ],
+            "summary": (
+                "The OCR text was received, but the laboratory "
+                "results could not be structured correctly."
+            ),
+            "advice": [
+                "Please upload a clearer laboratory report.",
+                "If the problem continues, consult a healthcare professional."
+            ]
+        }
