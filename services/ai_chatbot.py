@@ -77,7 +77,7 @@ def get_ai_response(message, user_id="guest"):
             "content": message
         })
         completion = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             messages=messages,
             temperature=0.7,
             max_tokens=200
